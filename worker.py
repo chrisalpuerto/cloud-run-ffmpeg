@@ -16,13 +16,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
+# hi
 # START HEALTH SERVER IMMEDIATELY - Cloud Run needs this before anything else
 def start_health_server():
     """Start HTTP health check server for Cloud Run"""
     port = int(os.environ.get("PORT", 8080))
     logger.info(f"Starting health check server on port {port}")
-    
+    print("hi")
     class HealthCheckHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
@@ -117,6 +117,13 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
     }
 
     Output will be uploaded to: gs://hooptuber-raw-1757394912/converted_uploads/{output_filename}
+    
+    ACK STRATEGY:
+    - ACK EARLY (immediately after message validation) to prevent Pub/Sub retries
+    - FFmpeg jobs take minutes, far exceeding Pub/Sub ack deadline (10-600s)
+    - Application-level failures are tracked in Firestore, NOT via message.nack()
+    - Idempotency is guaranteed via jobId in Firestore
+    - This prevents retry storms and duplicate encodes on Cloud Run
     """
     job_id = None
     input_file = None
@@ -130,7 +137,8 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
             logger.info(f"Received encoding job: {data}")
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON in message: {e}")
-            message.ack()  # Ack invalid messages to prevent retry
+            # ACK invalid messages immediately - no point retrying malformed JSON
+            message.ack()
             return
 
         # Validate required fields
@@ -139,7 +147,8 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
         if missing_fields:
             error_msg = f"Missing required fields: {missing_fields}"
             logger.error(error_msg)
-            message.ack()  # Ack invalid messages
+            # ACK invalid messages immediately - schema won't fix itself on retry
+            message.ack()
             return
 
         job_id = data["jobId"]
@@ -149,6 +158,19 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
         logger.info(f"Starting encoding job: {job_id}")
         logger.info(f"Input: {input_uri}")
         logger.info(f"Output filename: {output_filename}")
+
+        # ============================================================
+        # ACK EARLY: Message is valid, acknowledge it NOW
+        # ============================================================
+        # Why ACK here:
+        # 1. Message format is valid (jobId + input_uri present)
+        # 2. FFmpeg encoding takes minutes, will exceed ack deadline
+        # 3. Pub/Sub would retry message indefinitely if we wait
+        # 4. Application-level failures are tracked in Firestore below
+        # 5. Idempotency via jobId prevents duplicate encodes
+        # ============================================================
+        message.ack()
+        logger.info(f"[{job_id}] Message ACKed early - proceeding with encoding")
 
         # Update job status to ENCODING
         update_job_status(job_id, "ENCODING", encodingStartedAt=firestore.SERVER_TIMESTAMP)
@@ -189,18 +211,15 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
         )
 
         logger.info(f"[{job_id}] Encoding completed successfully in {duration:.2f}s")
-        message.ack()
 
     except Exception as e:
         error_msg = str(e)
         logger.error(f"[{job_id}] Encoding job failed: {error_msg}", exc_info=True)
 
-        # Update job status to FAILED
+        # Update job status to FAILED in Firestore (application-level failure tracking)
+        # NO message.nack() - message was already ACKed, failure is permanent
         if job_id:
             update_job_status(job_id, "FAILED", error=error_msg)
-
-        # Nack message to retry (Pub/Sub will handle retry logic)
-        message.nack()
 
     finally:
         # Always clean up temp files
