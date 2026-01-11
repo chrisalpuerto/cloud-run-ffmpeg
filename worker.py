@@ -7,7 +7,6 @@ import base64
 import os
 from typing import Optional
 from flask import Flask, request, jsonify
-import threading
 
 # Configure logging FIRST
 logging.basicConfig(
@@ -203,13 +202,9 @@ def handle_pubsub_push():
             # Return 400 to ACK invalid messages (no retry)
             return f'Bad Request: invalid message data - {str(e)}', 400
 
-        # Process the encoding job
-        # This will raise exceptions on failure, which Flask will catch
-        threading.Thread(
-            target=process_encoding_job,
-            args=(data,),
-            daemon=True
-        ).start()
+        # Process the encoding job synchronously
+        # Exceptions will propagate and return 500 (NACK) to trigger Pub/Sub retry
+        process_encoding_job(data)
 
         # Success - return 200 to ACK message
         return jsonify({'status': 'success', 'jobId': data.get('jobId')}), 200
