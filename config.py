@@ -1,0 +1,13 @@
+import os
+
+PROJECT_ID = os.getenv("GCP_PROJECT_ID", "hooptuber-dev-1234")
+ENCODE_TOPIC = os.getenv("ENCODE_PUBSUB", "video-encode-topic-sub")
+RAW_BUCKET = os.getenv("GCS_RAW_BUCKET", "hooptuber-raw-1757394912")
+CONVERTED_UPLOADS_FOLDER = "converted_uploads"
+
+FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "fast")
+CRF = os.getenv("FFMPEG_CRF", "23")
+TARGET_HEIGHT = int(os.getenv("TARGET_HEIGHT", "720"))
+
+if not PROJECT_ID:
+    raise RuntimeError("Project id is not set")
