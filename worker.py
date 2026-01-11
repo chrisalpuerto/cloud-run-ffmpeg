@@ -3,12 +3,11 @@
 import json
 import logging
 import time
-import signal
-import sys
-import threading
-from typing import Optional
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import base64
 import os
+from typing import Optional
+from flask import Flask, request, jsonify
+import threading
 
 # Configure logging FIRST
 logging.basicConfig(
@@ -16,65 +15,18 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-# hi
-# START HEALTH SERVER IMMEDIATELY - Cloud Run needs this before anything else
-def start_health_server():
-    """Start HTTP health check server for Cloud Run"""
-    port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting health check server on port {port}")
-    print("hi")
-    class HealthCheckHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b"OK")
-
-        def log_message(self, _format, *_args):
-            # Suppress default HTTP server logs to reduce noise
-            pass
-
-    try:
-        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-        logger.info(f"Health check server listening on 0.0.0.0:{port}")
-        server.serve_forever()
-    except Exception as e:
-        logger.error(f"Failed to start health server: {e}")
-        raise
-
-# Start health server in daemon thread immediately at module import
-health_thread = threading.Thread(target=start_health_server, daemon=True)
-health_thread.start()
-logger.info("Health check server thread started at module import")
 
 # NOW import GCP libraries and initialize clients (these can be slow)
-from google.cloud import pubsub_v1, firestore
+from google.cloud import firestore
 from gcs_utils import download_from_gcs, upload_to_gcs, GCSError
 from ffmpeg_functions import encode, FFmpegError
 from config import PROJECT_ID
 
 # Initialize GCP clients
 db = firestore.Client(project=PROJECT_ID)
-subscriber = pubsub_v1.SubscriberClient()
 
-# Get subscription path from environment
-subscription_name = os.environ.get("ENCODE_PUBSUB")
-if not subscription_name:
-    logger.error("ENCODE_PUBSUB environment variable not set")
-    sys.exit(1)
-
-subscription_path = subscriber.subscription_path(PROJECT_ID, subscription_name)
-logger.info(f"Subscription path: {subscription_path}")
-
-# Global flag for graceful shutdown
-shutdown_requested = False
-
-
-def signal_handler(sig, _frame):
-    """Handle shutdown signals gracefully"""
-    global shutdown_requested
-    logger.info(f"Received signal {sig}, initiating graceful shutdown...")
-    shutdown_requested = True
+# Initialize Flask app
+app = Flask(__name__)
 
 
 def cleanup_temp_files(*file_paths):
@@ -104,12 +56,11 @@ def update_job_status(job_id: str, status: str, error: Optional[str] = None, **k
     except Exception as e:
         logger.error(f"Failed to update job {job_id} status: {e}")
 
-
-def handle_message(message: pubsub_v1.subscriber.message.Message):
+def process_encoding_job(data: dict):
     """
-    Process a Pub/Sub message for video encoding
+    Process a video encoding job
 
-    Expected message format:
+    Expected data format:
     {
         "jobId": "job-id-here",
         "input_uri": "gs://bucket/path/to/input.mov",
@@ -117,13 +68,6 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
     }
 
     Output will be uploaded to: gs://hooptuber-raw-1757394912/converted_uploads/{output_filename}
-    
-    ACK STRATEGY:
-    - ACK EARLY (immediately after message validation) to prevent Pub/Sub retries
-    - FFmpeg jobs take minutes, far exceeding Pub/Sub ack deadline (10-600s)
-    - Application-level failures are tracked in Firestore, NOT via message.nack()
-    - Idempotency is guaranteed via jobId in Firestore
-    - This prevents retry storms and duplicate encodes on Cloud Run
     """
     job_id = None
     input_file = None
@@ -131,25 +75,13 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
     start_time = time.time()
 
     try:
-        # Parse message data
-        try:
-            data = json.loads(message.data.decode())
-            logger.info(f"Received encoding job: {data}")
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in message: {e}")
-            # ACK invalid messages immediately - no point retrying malformed JSON
-            message.ack()
-            return
-
         # Validate required fields
         required_fields = ["jobId", "input_uri"]
         missing_fields = [f for f in required_fields if f not in data]
         if missing_fields:
             error_msg = f"Missing required fields: {missing_fields}"
             logger.error(error_msg)
-            # ACK invalid messages immediately - schema won't fix itself on retry
-            message.ack()
-            return
+            raise ValueError(error_msg)
 
         job_id = data["jobId"]
         input_uri = data["input_uri"]
@@ -158,19 +90,6 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
         logger.info(f"Starting encoding job: {job_id}")
         logger.info(f"Input: {input_uri}")
         logger.info(f"Output filename: {output_filename}")
-
-        # ============================================================
-        # ACK EARLY: Message is valid, acknowledge it NOW
-        # ============================================================
-        # Why ACK here:
-        # 1. Message format is valid (jobId + input_uri present)
-        # 2. FFmpeg encoding takes minutes, will exceed ack deadline
-        # 3. Pub/Sub would retry message indefinitely if we wait
-        # 4. Application-level failures are tracked in Firestore below
-        # 5. Idempotency via jobId prevents duplicate encodes
-        # ============================================================
-        message.ack()
-        logger.info(f"[{job_id}] Message ACKed early - proceeding with encoding")
 
         # Update job status to ENCODING
         update_job_status(job_id, "ENCODING", encodingStartedAt=firestore.SERVER_TIMESTAMP)
@@ -217,57 +136,116 @@ def handle_message(message: pubsub_v1.subscriber.message.Message):
         logger.error(f"[{job_id}] Encoding job failed: {error_msg}", exc_info=True)
 
         # Update job status to FAILED in Firestore (application-level failure tracking)
-        # NO message.nack() - message was already ACKed, failure is permanent
         if job_id:
             update_job_status(job_id, "FAILED", error=error_msg)
+
+        # Re-raise to return 500 to Pub/Sub for retry on transient errors
+        raise
 
     finally:
         # Always clean up temp files
         cleanup_temp_files(input_file, output_file)
 
 
-def main():
-    """Main worker loop"""
-    logger.info("=" * 60)
-    logger.info("FFmpeg Encoding Worker Starting")
-    logger.info(f"Project ID: {PROJECT_ID}")
-    logger.info(f"Subscription: {subscription_path}")
-    logger.info("=" * 60)
+@app.route('/encode', methods=['POST'])
+def handle_pubsub_push():
+    """
+    Handle Pub/Sub push subscription messages
 
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
+    Pub/Sub push format:
+    {
+        "message": {
+            "data": "base64-encoded-json",
+            "messageId": "...",
+            "publishTime": "..."
+        },
+        "subscription": "..."
+    }
 
+    PUSH SUBSCRIPTION ACK BEHAVIOR:
+    - HTTP 200-299: Message is ACKed (success)
+    - HTTP 400-499: Message is ACKed (permanent failure, no retry)
+    - HTTP 500-599: Message is NACKed (transient failure, will retry with backoff)
+    """
     try:
-        # Subscribe to Pub/Sub
-        streaming_pull_future = subscriber.subscribe(
-            subscription_path,
-            callback=handle_message
-        )
-        logger.info("Encoder worker listening for messages...")
+        # Verify request has Pub/Sub envelope
+        envelope = request.get_json()
+        if not envelope:
+            logger.error("No JSON body in request")
+            return 'Bad Request: no JSON body', 400
 
-        # Keep worker alive until shutdown signal
-        while not shutdown_requested:
-            try:
-                time.sleep(1)
-            except KeyboardInterrupt:
-                logger.info("KeyboardInterrupt received, shutting down...")
-                break
+        if 'message' not in envelope:
+            logger.error("No message field in request")
+            return 'Bad Request: no message field', 400
 
-        # Graceful shutdown
-        logger.info("Shutting down worker...")
-        streaming_pull_future.cancel()
+        # Extract and decode message data
+        message = envelope['message']
+
+        if 'data' not in message:
+            logger.error("No data field in message")
+            return 'Bad Request: no data field', 400
+
+        # Decode base64 data
         try:
-            streaming_pull_future.result(timeout=30)  # Wait up to 30s for ongoing work
-        except Exception as e:
-            logging.info(f"Streaming pull closed error: {e}")
+            message_data = base64.b64decode(message['data']).decode('utf-8')
+            data = json.loads(message_data)
+            logger.info(f"Received encoding job: {data}")
+        except (json.JSONDecodeError, base64.binascii.Error) as e:
+            logger.error(f"Invalid message data: {e}")
+            # Return 400 to ACK invalid messages (no retry)
+            return f'Bad Request: invalid message data - {str(e)}', 400
+
+        # Process the encoding job
+        # This will raise exceptions on failure, which Flask will catch
+        threading.Thread(
+            target=process_encoding_job,
+            args=(data,),
+            daemon=True
+        ).start()
+
+        # Success - return 200 to ACK message
+        return jsonify({'status': 'success', 'jobId': data.get('jobId')}), 200
+
+    except ValueError as e:
+        # Validation errors (missing fields) - return 400 to ACK (no retry)
+        logger.error(f"Validation error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 400
 
     except Exception as e:
-        logger.error(f"Fatal error in worker: {e}", exc_info=True)
-        sys.exit(1)
+        # Runtime errors (FFmpeg, GCS, etc.) - return 500 to NACK (retry)
+        logger.error(f"Processing error: {e}", exc_info=True)
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
-    logger.info("Encoder worker stopped")
+
+@app.route('/', methods=['GET'])
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for Cloud Run"""
+    return 'OK', 200
 
 
 if __name__ == "__main__":
-    main()
+    """
+    Run Flask app for Pub/Sub push subscription
+
+    Cloud Run will route HTTP requests to this Flask app.
+    Pub/Sub push subscription will POST to /encode endpoint.
+    """
+    port = int(os.environ.get("PORT", 8080))
+
+    logger.info("=" * 60)
+    logger.info("FFmpeg Encoding Worker Starting (PUSH mode)")
+    logger.info(f"Project ID: {PROJECT_ID}")
+    logger.info(f"Port: {port}")
+    logger.info("Push endpoint: /encode")
+    logger.info("Health check: / or /health")
+    logger.info("=" * 60)
+
+    # Run Flask app
+    # Cloud Run manages the lifecycle, no need for signal handlers
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,  # Always False in production
+        threaded=True  # Handle multiple requests concurrently
+    )

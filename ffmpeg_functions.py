@@ -94,3 +94,6 @@ def encode(input_path: str, output_path: str):
         error_msg = f"Unexpected error during encoding: {str(e)}"
         logger.error(error_msg)
         raise FFmpegError(error_msg)
+
+def process_job():
+    return ""
