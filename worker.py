@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # NOW import GCP libraries and initialize clients (these can be slow)
 from google.cloud import firestore
 from gcs_utils import download_from_gcs, upload_to_gcs, GCSError
-from ffmpeg_functions import encode, FFmpegError
+from ffmpeg_functions import encode, FFmpegError, VideoAlreadyOptimized
 from config import PROJECT_ID
 
 # Initialize GCP clients
@@ -102,12 +102,17 @@ def process_encoding_job(data: dict):
         except (GCSError, ValueError) as e:
             raise Exception(f"Download failed: {str(e)}")
 
-        # Step 2: Encode video
+        # Step 2: Encode video (or skip if already optimized)
         logger.info(f"[{job_id}] Step 2/3: Encoding video...")
         output_file = f"/tmp/{job_id}_encoded.mp4"
         try:
             encode(input_file, output_file)
             logger.info(f"[{job_id}] Encoded to: {output_file}")
+        except VideoAlreadyOptimized as e:
+            # Video is already optimized - use the original input file
+            logger.info(f"[{job_id}] {str(e)}")
+            logger.info(f"[{job_id}] Using original input file instead of encoding")
+            output_file = input_file  # Use input file as output
         except (FFmpegError, FileNotFoundError) as e:
             raise Exception(f"Encoding failed: {str(e)}")
         # Step 3: Upload to GCS (to converted_uploads folder)
@@ -143,7 +148,11 @@ def process_encoding_job(data: dict):
 
     finally:
         # Always clean up temp files
-        cleanup_temp_files(input_file, output_file)
+        # If output_file == input_file (video was already optimized), only clean up once
+        if output_file and output_file == input_file:
+            cleanup_temp_files(input_file)
+        else:
+            cleanup_temp_files(input_file, output_file)
 
 
 @app.route('/encode', methods=['POST'])

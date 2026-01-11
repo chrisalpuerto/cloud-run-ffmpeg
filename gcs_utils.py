@@ -20,10 +20,8 @@ class GCSError(Exception):
 def download_from_gcs(gs_uri: str) -> str:
     """
     Download a file from Google Cloud Storage to a temporary file
-
     Args:
         gs_uri: GCS URI in format gs://bucket-name/path/to/file
-
     Returns:
         str: Path to downloaded temporary file
 
@@ -111,21 +109,9 @@ def download_from_gcs(gs_uri: str) -> str:
         raise GCSError(error_msg) from e
 
 
+
+
 def upload_to_gcs(local_path: str, filename: str):
-    """
-    Upload a local file to Google Cloud Storage in the converted_uploads folder
-
-    Args:
-        local_path: Path to local file
-        filename: Filename to use in GCS (will be placed in converted_uploads folder)
-
-    Returns:
-        str: Full GCS URI where file was uploaded
-
-    Raises:
-        GCSError: If upload fails
-        FileNotFoundError: If local file doesn't exist
-    """
     # Validate local file exists
     if not os.path.exists(local_path):
         error_msg = f"Local file not found: {local_path}"
