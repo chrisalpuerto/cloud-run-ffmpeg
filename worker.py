@@ -257,7 +257,10 @@ def main():
         # Graceful shutdown
         logger.info("Shutting down worker...")
         streaming_pull_future.cancel()
-        streaming_pull_future.result(timeout=30)  # Wait up to 30s for ongoing work
+        try:
+            streaming_pull_future.result(timeout=30)  # Wait up to 30s for ongoing work
+        except Exception as e:
+            logging.info(f"Streaming pull closed error: {e}")
 
     except Exception as e:
         logger.error(f"Fatal error in worker: {e}", exc_info=True)
