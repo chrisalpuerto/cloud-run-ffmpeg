@@ -90,7 +90,7 @@ def process_encoding_job(data: dict):
         logger.info(f"Starting encoding job: {job_id}")
         logger.info(f"Input: {input_uri}")
         logger.info(f"Output filename: {output_filename}")
-
+        print(f"hi")
         # Update job status to ENCODING
         update_job_status(job_id, "ENCODING", encodingStartedAt=firestore.SERVER_TIMESTAMP)
 
@@ -110,7 +110,6 @@ def process_encoding_job(data: dict):
             logger.info(f"[{job_id}] Encoded to: {output_file}")
         except (FFmpegError, FileNotFoundError) as e:
             raise Exception(f"Encoding failed: {str(e)}")
-
         # Step 3: Upload to GCS (to converted_uploads folder)
         logger.info(f"[{job_id}] Step 3/3: Uploading to GCS converted_uploads folder...")
         try:
