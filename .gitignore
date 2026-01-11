@@ -1,4 +1,5 @@
 .env
 .env*
-venv_cloud
+venv_encoding
 .DS_Store
+secrets
