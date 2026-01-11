@@ -22,7 +22,7 @@ def start_health_server():
     """Start HTTP health check server for Cloud Run"""
     port = int(os.environ.get("PORT", 8080))
     logger.info(f"Starting health check server on port {port}")
-
+    print("hi")
     class HealthCheckHandler(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)

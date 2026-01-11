@@ -8,7 +8,7 @@ on:
 env:
   PROJECT_ID: hooptuber-dev-1234
   REGION: us-central1
-  SERVICE: ffmpeg-encoder
+  SERVICE: cloud-video-encoder-hooptuber
   REPO: ffmpeg-encoder
   IMAGE: encoder
 
@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Authenticate GitHub → GCP
+      # Authenticate GitHub -> GCP
       - uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
