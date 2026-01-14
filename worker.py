@@ -104,7 +104,7 @@ def process_encoding_job(data: dict):
         logger.info(f"Input: {input_uri}")
         logger.info(f"Output filename: {output_filename}")
         # Update job status to ENCODING
-        update_job_status(job_id, "ENCODING", encodingStartedAt=firestore.SERVER_TIMESTAMP)
+        update_job_status(job_id, "encoding", encodingStartedAt=firestore.SERVER_TIMESTAMP)
 
         # Step 1: Download from GCS
         logger.info(f"[{job_id}] Step 1/3: Downloading from GCS...")
