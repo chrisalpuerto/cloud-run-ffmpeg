@@ -1,16 +1,20 @@
-from google.cloud import storage
+from google.cloud import storage, pubsub_v1
 from google.cloud.exceptions import GoogleCloudError, NotFound
 import tempfile
 import os
 import logging
 from config import RAW_BUCKET, CONVERTED_UPLOADS_FOLDER
-
+import json
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 client = storage.Client()
+publisher = pubsub_v1.PublisherClient()
+PROJECT_ID = os.getenv("PROJECT_ID")
 
+# default to my topic, will be written to production topic later
+NEXT_WORKER_TOPIC = "video-jobs-chris"
 
 class GCSError(Exception):
     """Custom exception for GCS operations"""
@@ -109,7 +113,18 @@ def download_from_gcs(gs_uri: str) -> str:
         raise GCSError(error_msg) from e
 
 
-
+def publish_other_worker_message(job_id: str, encoded_uri: str, next_topic: str=NEXT_WORKER_TOPIC):
+    topic_path = publisher.topic_path(PROJECT_ID, next_topic)
+    message_data = {
+        "jobId": job_id,
+        "encoded_uri": encoded_uri,
+    }
+    message_json = json.dumps(message_data).encode("utf-8")
+    future = publisher.publish(topic_path, data=message_json)
+    message_id = future.result()
+    logger.info(f"Published to analysis worker")
+    return message_id
+    
 
 def upload_to_gcs(local_path: str, filename: str):
     # Validate local file exists

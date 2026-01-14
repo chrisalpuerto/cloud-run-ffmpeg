@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 
 # NOW import GCP libraries and initialize clients (these can be slow)
 from google.cloud import firestore
-from gcs_utils import download_from_gcs, upload_to_gcs, GCSError
+from gcs_utils import (download_from_gcs,
+                        upload_to_gcs,
+                          GCSError,
+                            publish_other_worker_message)
 from ffmpeg_functions import encode, FFmpegError, VideoAlreadyOptimized
 from config import PROJECT_ID
 
@@ -55,17 +58,28 @@ def update_job_status(job_id: str, status: str, error: Optional[str] = None, **k
     except Exception as e:
         logger.error(f"Failed to update job {job_id} status: {e}")
 
+def update_job_encoded(job_id: str, output_uri: str, duration_sec: int):
+    """Update job in Firestore for output uri"""
+    try:
+        job_ref = db.collection("jobs").document(job_id)
+        update_data = {
+            "encoded_uri": output_uri,
+            "encodedCompletedAt": firestore.SERVER_TIMESTAMP,
+        }
+        job_ref.update(update_data)
+        logger.info(f"Job {job_id} marked as done.")
+    except Exception as e:
+        logger.error(f"Failed to mark job {job_id} as done: {e}")
+
 def process_encoding_job(data: dict):
     """
     Process a video encoding job
-
     Expected data format:
     {
         "jobId": "job-id-here",
         "input_uri": "gs://bucket/path/to/input.mov",
         "output_filename": "output.mp4"  // Optional, defaults to {jobId}_encoded.mp4
     }
-
     Output will be uploaded to: gs://hooptuber-raw-1757394912/converted_uploads/{output_filename}
     """
     job_id = None
@@ -89,7 +103,6 @@ def process_encoding_job(data: dict):
         logger.info(f"Starting encoding job: {job_id}")
         logger.info(f"Input: {input_uri}")
         logger.info(f"Output filename: {output_filename}")
-        print(f"hi")
         # Update job status to ENCODING
         update_job_status(job_id, "ENCODING", encodingStartedAt=firestore.SERVER_TIMESTAMP)
 
@@ -123,24 +136,24 @@ def process_encoding_job(data: dict):
             raise Exception(f"Upload failed: {str(e)}")
 
         # Success - update job status
+        # queue up for further processing
         duration = time.time() - start_time
         update_job_status(
             job_id,
-            "ENCODED",
-            output_uri=output_uri,
+            "queued",
             encodedAt=firestore.SERVER_TIMESTAMP,
             encodingDurationSec=int(duration)
         )
-
+        update_job_encoded(job_id, output_uri, int(duration))
         logger.info(f"[{job_id}] Encoding completed successfully in {duration:.2f}s")
-
+        publish_other_worker_message(job_id, output_uri)
     except Exception as e:
         error_msg = str(e)
         logger.error(f"[{job_id}] Encoding job failed: {error_msg}", exc_info=True)
 
         # Update job status to FAILED in Firestore (application-level failure tracking)
         if job_id:
-            update_job_status(job_id, "FAILED", error=error_msg)
+            update_job_status(job_id, "error", error=error_msg)
 
         # Re-raise to return 500 to Pub/Sub for retry on transient errors
         raise
@@ -201,13 +214,25 @@ def handle_pubsub_push():
             logger.error(f"Invalid message data: {e}")
             # Return 400 to ACK invalid messages (no retry)
             return f'Bad Request: invalid message data - {str(e)}', 400
+        jobId = data.get("jobId")
+        job = firestore.get(jobId)
+
+        if job.status in ["complete", "failed", "cancelled", "error", "done"]:
+            return jsonify({'status': 'no action taken', 'jobId': data.get('jobId')}), 200
+        if data.get("status") == "done":
+            logger.info("Job is already done, no processing needed.")
+            return jsonify({'status': 'already done', 'jobId': data.get('jobId')}), 200
+        if data.get("status") == "error":
+            logger.info("Job is in error state, no processing needed.")
+            return jsonify({'status': 'error state', 'jobId': data.get('jobId')}), 200
 
         # Process the encoding job synchronously
         # Exceptions will propagate and return 500 (NACK) to trigger Pub/Sub retry
         process_encoding_job(data)
 
         # Success - return 200 to ACK message
-        return jsonify({'status': 'success', 'jobId': data.get('jobId')}), 200
+        # status set to queue for further processing
+        return jsonify({'status': 'queued', 'jobId': data.get('jobId')}), 200
 
     except ValueError as e:
         # Validation errors (missing fields) - return 400 to ACK (no retry)
