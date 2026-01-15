@@ -192,6 +192,7 @@ def handle_pubsub_push():
     """
     try:
         # Verify request has Pub/Sub envelope
+        logger.error("/ENCODE HIT BRO")
         envelope = request.get_json()
         if not envelope:
             logger.error("No JSON body in request")
