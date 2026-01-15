@@ -144,7 +144,10 @@ def process_encoding_job(data: dict):
             encodedAt=firestore.SERVER_TIMESTAMP,
             encodingDurationSec=int(duration)
         )
-        update_job_encoded(job_id, output_uri, int(duration))
+        update_job_encoded(
+            job_id,
+            output_uri,
+            int(duration))
         logger.info(f"[{job_id}] Encoding completed successfully in {duration:.2f}s")
         publish_other_worker_message(job_id, output_uri)
     except Exception as e:
@@ -215,9 +218,9 @@ def handle_pubsub_push():
             # Return 400 to ACK invalid messages (no retry)
             return f'Bad Request: invalid message data - {str(e)}', 400
         jobId = data.get("jobId")
-        job = firestore.get(jobId)
+        
 
-        if job.status in ["complete", "failed", "cancelled", "error", "done"]:
+        if jobId in ["complete", "failed", "cancelled", "error", "done"]:
             return jsonify({'status': 'no action taken', 'jobId': data.get('jobId')}), 200
         if data.get("status") == "done":
             logger.info("Job is already done, no processing needed.")
