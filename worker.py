@@ -109,7 +109,7 @@ def check_job_idempotency(job_id: str) -> tuple[bool, str, int]:
     """
     # Statuses that indicate job should not be processed again
     TERMINAL_STATUSES = {"done", "error", "cancelled", "failed"}
-    IN_PROGRESS_STATUSES = {"encoding"}
+    IN_PROGRESS_STATUSES = {"queued"}
 
     try:
         job_ref = db.collection("jobs").document(job_id)
