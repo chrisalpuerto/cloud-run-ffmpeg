@@ -36,7 +36,7 @@ class NonRetryableError(Exception):
 # Configuration for retry control
 MAX_RETRY_COUNT = 3  # Maximum retries before permanent failure
 
-# NOW import GCP libraries and initialize clients (these can be slow)
+# import GCP libraries and initialize clients
 from google.cloud import firestore
 from gcs_utils import (download_from_gcs,
                         upload_to_gcs,
@@ -53,7 +53,7 @@ app = Flask(__name__)
 
 
 def cleanup_temp_files(*file_paths):
-    """Clean up temporary files"""
+    # clean up temporary files function
     for file_path in file_paths:
         if file_path and os.path.exists(file_path):
             try:
@@ -64,7 +64,7 @@ def cleanup_temp_files(*file_paths):
 
 
 def update_job_status(job_id: str, status: str, error: Optional[str] = None, **kwargs):
-    """Update job status in Firestore with error handling"""
+    # Update job status in Firestore with error handling
     try:
         job_ref = db.collection("jobs").document(job_id)
         update_data = {"status": status}
@@ -80,7 +80,7 @@ def update_job_status(job_id: str, status: str, error: Optional[str] = None, **k
         logger.error(f"Failed to update job {job_id} status: {e}")
 
 def update_job_encoded(job_id: str, output_uri: str, duration_sec: int):
-    """Update job in Firestore for output uri"""
+    # Update job in Firestore for output uri
     try:
         job_ref = db.collection("jobs").document(job_id)
         update_data = {
@@ -97,15 +97,6 @@ def check_job_idempotency(job_id: str) -> tuple[bool, str, int]:
     """
     Check if job has already been handled or is in progress.
     Returns (should_skip, current_status, retry_count).
-
-    Args:
-        job_id: The job ID to check
-
-    Returns:
-        tuple: (should_skip: bool, status: str, retry_count: int)
-        - should_skip: True if job should be ACKed without processing
-        - status: Current job status from Firestore
-        - retry_count: Current retry count from Firestore
     """
     # Statuses that indicate job should not be processed again
     TERMINAL_STATUSES = {"done", "error", "cancelled", "failed"}
@@ -174,16 +165,13 @@ def mark_job_permanently_failed(job_id: str, error: str):
 
 def process_encoding_job(data: dict):
     """
-    Process a video encoding job.
-
     Expected data format:
     {
         "jobId": "job-id-here",
         "input_uri": "gs://bucket/path/to/input.mov",
         "output_filename": "output.mp4"  // Optional, defaults to {jobId}_encoded.mp4
     }
-    Output will be uploaded to: gs://hooptuber-raw-1757394912/converted_uploads/{output_filename}
-
+    Output will be uploaded to: gs://{raw_bucket}/converted_uploads/{output_filename}
     Raises:
         RetryableError: For transient infrastructure failures (GCS timeouts, network issues)
         NonRetryableError: For permanent failures (invalid input, FFmpeg errors, corrupt videos)
@@ -297,12 +285,7 @@ def process_encoding_job(data: dict):
         except Exception as cleanup_error:
             logger.warning(f"[{job_id}] Cleanup failed: {cleanup_error}")
 
-
-@app.route('/encode', methods=['POST'])
-def handle_pubsub_push():
-    """
-    Handle Pub/Sub push subscription messages with strict retry control.
-
+"""
     Pub/Sub push format:
     {
         "message": {
@@ -312,12 +295,16 @@ def handle_pubsub_push():
         },
         "subscription": "..."
     }
+"""
 
+
+@app.route('/encode', methods=['POST'])
+def handle_pubsub_push():
+    """
     ACK/NACK BEHAVIOR:
     - HTTP 200-299: Message is ACKed (success or permanent failure)
     - HTTP 400-499: Message is ACKed (invalid message, no retry)
     - HTTP 500: Message is NACKed (transient failure, will retry with backoff)
-
     This endpoint only returns 500 for explicitly retryable errors.
     All other errors return 200/400 to ACK and prevent retry storms.
     """
@@ -335,7 +322,7 @@ def handle_pubsub_push():
             logger.error("No message field in request")
             return 'Bad Request: no message field', 400
 
-        # Extract and decode message data
+        # extract and decode message data
         message = envelope['message']
         message_id = message.get('messageId', 'unknown')
 
@@ -343,7 +330,7 @@ def handle_pubsub_push():
             logger.error("No data field in message")
             return 'Bad Request: no data field', 400
 
-        # Decode base64 data
+        # decode base64 data
         try:
             message_data = base64.b64decode(message['data']).decode('utf-8')
             data = json.loads(message_data)
@@ -354,12 +341,12 @@ def handle_pubsub_push():
 
         job_id = data.get("jobId")
 
-        # Early validation: job_id is required
+        # early validation: job_id is required
         if not job_id:
             logger.error("Missing jobId in message data")
             return jsonify({'status': 'error', 'message': 'Missing jobId'}), 400
 
-        # IDEMPOTENCY GUARD: Check if job has already been handled
+        # Check if job has already been handled using idempotency check
         should_skip, current_status, retry_count = check_job_idempotency(job_id)
 
         if should_skip:
@@ -370,7 +357,7 @@ def handle_pubsub_push():
                 'currentStatus': current_status
             }), 200
 
-        # Check retry limit before processing
+        # check retry limit before processing
         if retry_count >= MAX_RETRY_COUNT:
             error_msg = f"Job {job_id} exceeded max retries ({MAX_RETRY_COUNT})"
             logger.error(error_msg)
@@ -381,7 +368,7 @@ def handle_pubsub_push():
                 'message': error_msg
             }), 200  # ACK to stop retries
 
-        # Legacy status checks from message payload (for backwards compatibility)
+        # legacy status checks from message payload (for backwards compatibility)
         if data.get("status") in ["done", "error", "cancelled", "failed"]:
             logger.info(f"Job {job_id} has terminal status in payload: {data.get('status')}")
             return jsonify({
@@ -390,21 +377,21 @@ def handle_pubsub_push():
                 'reason': f"payload status is {data.get('status')}"
             }), 200
 
-        # Process the encoding job
+        # process the encoding job
         process_encoding_job(data)
 
         # Success - return 200 to ACK message
-        return jsonify({'status': 'queued', 'jobId': job_id}), 200
+        return jsonify({'status': 'processing', 'jobId': job_id}), 200
 
     except NonRetryableError as e:
-        # Permanent failure - ACK message to prevent retries
+        # permanent failure, ACK message to prevent retries
         error_msg = str(e)
         logger.error(f"[{job_id}] Non-retryable error: {error_msg}")
 
         if job_id:
             update_job_status(job_id, "error", error=error_msg)
 
-        # Return 200 to ACK - this job will never succeed
+        # return 200 to ACK as this job will never succeed
         return jsonify({
             'status': 'permanent_error',
             'jobId': job_id,
@@ -413,7 +400,7 @@ def handle_pubsub_push():
         }), 200
 
     except RetryableError as e:
-        # Transient failure - check retry count before NACKing
+        # transient failure, check retry count before NACKing
         error_msg = str(e)
         logger.warning(f"[{job_id}] Retryable error: {error_msg}")
 
@@ -465,14 +452,10 @@ def health_check():
     """Health check endpoint for Cloud Run"""
     return 'OK', 200
 
-
+# running flask app here for pub sub subscription
+# cloud Run will route HTTP requests to this Flask app
 if __name__ == "__main__":
-    """
-    Run Flask app for Pub/Sub push subscription
-
-    Cloud Run will route HTTP requests to this Flask app.
-    Pub/Sub push subscription will POST to /encode endpoint.
-    """
+    # Pub/Sub push subscription will POST to /encode endpoint.
     port = int(os.environ.get("PORT", 8080))
 
     logger.info("=" * 60)

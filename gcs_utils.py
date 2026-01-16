@@ -22,17 +22,7 @@ class GCSError(Exception):
 
 
 def download_from_gcs(gs_uri: str) -> str:
-    """
-    Download a file from Google Cloud Storage to a temporary file
-    Args:
-        gs_uri: GCS URI in format gs://bucket-name/path/to/file
-    Returns:
-        str: Path to downloaded temporary file
-
-    Raises:
-        GCSError: If download fails
-        ValueError: If URI format is invalid
-    """
+    #Download a file from Google Cloud Storage to a temporary file
     if not gs_uri.startswith("gs://"):
         error_msg = f"Invalid GCS URI format: {gs_uri}. Must start with gs://"
         logger.error(error_msg)
