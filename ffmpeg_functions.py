@@ -154,6 +154,8 @@ def encode(input_path: str, output_path: str):
         "-c:v", "libx264",
         "-preset", FFMPEG_PRESET,
         "-crf", str(CRF),
+        "-pix_fmt", "yuv420p",  # Ensure compatibility
+        "-r", "30",  # Standardize frame rate
         "-movflags", "+faststart",  # Enable progressive download
         "-c:a", "aac",
         "-b:a", "128k",  # Audio bitrate for consistent quality
