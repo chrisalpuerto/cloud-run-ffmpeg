@@ -108,6 +108,7 @@ def publish_other_worker_message(job_id: str, encoded_uri: str, next_topic: str=
     message_data = {
         "jobId": job_id,
         "encoded_uri": encoded_uri,
+        "videoGcsUri": encoded_uri
     }
     message_json = json.dumps(message_data).encode("utf-8")
     future = publisher.publish(topic_path, data=message_json)

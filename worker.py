@@ -79,6 +79,18 @@ def update_job_status(job_id: str, status: str, error: Optional[str] = None, **k
     except Exception as e:
         logger.error(f"Failed to update job {job_id} status: {e}")
 
+def update_video_gcs_uri(job_id: str, gcs_uri: str):
+    # Update job in Firestore for video GCS URI
+    try:
+        job_ref = db.collection("jobs").document(job_id)
+        update_data = {
+            "videoGcsUri": gcs_uri,
+        }
+        job_ref.update(update_data)
+        logger.info(f"Job {job_id} video GCS URI updated.")
+    except Exception as e:
+        logger.error(f"Failed to update job {job_id} video GCS URI: {e}")
+
 def update_job_encoded(job_id: str, output_uri: str, duration_sec: int):
     # Update job in Firestore for output uri
     try:
@@ -264,9 +276,14 @@ def process_encoding_job(data: dict):
         update_job_encoded(job_id, output_uri, int(duration))
         logger.info(f"[{job_id}] Encoding completed successfully in {duration:.2f}s")
         try:
+            update_video_gcs_uri(job_id, output_uri)
+        except Exception as e:
+            logger.error(f"[{job_id}] Failed to update video GCS URI: {e}", exc_info=True)
+        try:
             publish_other_worker_message(job_id, output_uri)
         except Exception as e:
             logger.error(f"[{job_id}] Failed to publish to next worker: {e}", exc_info=True)
+            raise RetryableError(f"Failed to publish to next worker: {str(e)}")
 
     except (RetryableError, NonRetryableError):
         # Re-raise classified errors for handler to process
