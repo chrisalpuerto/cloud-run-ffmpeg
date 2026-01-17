@@ -14,7 +14,10 @@ publisher = pubsub_v1.PublisherClient()
 PROJECT_ID = os.getenv("PROJECT_ID")
 
 # default to my topic, will be written to production topic later
-NEXT_WORKER_TOPIC = "video-jobs-chris"
+
+# USE MY CHRIS TOPIC DURING LOCAL TESTING
+#NEXT_WORKER_TOPIC = "video-jobs-chris" 
+NEXT_WORKER_TOPIC = "video-jobs"
 
 class GCSError(Exception):
     """Custom exception for GCS operations"""
