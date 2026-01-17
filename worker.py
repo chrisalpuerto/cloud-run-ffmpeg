@@ -257,13 +257,16 @@ def process_encoding_job(data: dict):
         duration = time.time() - start_time
         update_job_status(
             job_id,
-            "queued",
+            "processing",
             encodedAt=firestore.SERVER_TIMESTAMP,
             encodingDurationSec=int(duration)
         )
         update_job_encoded(job_id, output_uri, int(duration))
         logger.info(f"[{job_id}] Encoding completed successfully in {duration:.2f}s")
-        publish_other_worker_message(job_id, output_uri)
+        try:
+            publish_other_worker_message(job_id, output_uri)
+        except Exception as e:
+            logger.error(f"[{job_id}] Failed to publish to next worker: {e}", exc_info=True)
 
     except (RetryableError, NonRetryableError):
         # Re-raise classified errors for handler to process
@@ -296,7 +299,8 @@ def process_encoding_job(data: dict):
         "subscription": "..."
     }
 """
-
+def job_ref_dict(job_id: str):
+    return db.collection("jobs").document(job_id).get().to_dict()
 
 @app.route('/encode', methods=['POST'])
 def handle_pubsub_push():
@@ -346,6 +350,13 @@ def handle_pubsub_push():
             logger.error("Missing jobId in message data")
             return jsonify({'status': 'error', 'message': 'Missing jobId'}), 400
 
+        job = job_ref_dict(job_id)
+
+        if job.get("encoded_uri"):
+            logger.warning(
+                f"[{job_id}] Error occurred after encoding; preserving encoded state"
+            )
+            return jsonify({"status": "encoded_with_warning"}), 200
         # Check if job has already been handled using idempotency check
         should_skip, current_status, retry_count = check_job_idempotency(job_id)
 
