@@ -204,6 +204,9 @@ def process_encoding_job(data: dict):
 
         job_id = data["jobId"]
         input_uri = data["input_uri"]
+
+        curr_username = data.get("curr_username", "unknown_user")
+
         output_filename = data.get("output_filename", f"{job_id}_encoded.mp4")
 
         # Validate input_uri format
@@ -219,6 +222,7 @@ def process_encoding_job(data: dict):
         # Update job status to ENCODING
         update_job_status(job_id, "encoding", encodingStartedAt=firestore.SERVER_TIMESTAMP)
 
+        logger.info(f"{curr_username}: starting encoding job {job_id}")
         # Step 1: Download from GCS
         logger.info(f"[{job_id}] Step 1/3: Downloading from GCS...")
         try:
@@ -236,6 +240,7 @@ def process_encoding_job(data: dict):
             raise RetryableError(f"GCS download failed (transient): {str(e)}")
 
         # Step 2: Encode video (or skip if already optimized)
+        logger.info(f"{curr_username}: starting step 2/3: ")
         logger.info(f"[{job_id}] Step 2/3: Encoding video...")
         output_file = f"/tmp/{job_id}_encoded.mp4"
         try:
@@ -275,6 +280,7 @@ def process_encoding_job(data: dict):
         )
         update_job_encoded(job_id, output_uri, int(duration))
         logger.info(f"[{job_id}] Encoding completed successfully in {duration:.2f}s")
+        logger.info(f"{curr_username}: encoding successful for this user.")
         try:
             update_video_gcs_uri(job_id, output_uri)
         except Exception as e:
@@ -283,7 +289,9 @@ def process_encoding_job(data: dict):
             publish_other_worker_message(job_id, output_uri)
         except Exception as e:
             logger.error(f"[{job_id}] Failed to publish to next worker: {e}", exc_info=True)
+            logger.error(f"{curr_username}: failed to publish to next worker.")
             raise RetryableError(f"Failed to publish to next worker: {str(e)}")
+
 
     except (RetryableError, NonRetryableError):
         # Re-raise classified errors for handler to process
