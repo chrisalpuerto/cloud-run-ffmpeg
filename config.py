@@ -8,7 +8,10 @@ CONVERTED_UPLOADS_FOLDER = "converted_uploads"
 
 FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "fast")
 CRF = os.getenv("FFMPEG_CRF", "23")
-TARGET_HEIGHT = int(os.getenv("TARGET_HEIGHT", "720"))
+
+# testing on 1080, will change back to 720p 
+TARGET_HEIGHT = int(os.getenv("TARGET_HEIGHT", "1080"))
+
 
 if not PROJECT_ID:
     raise RuntimeError("Project id is not set")
