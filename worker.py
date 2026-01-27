@@ -6,8 +6,8 @@ import time
 import base64
 import os
 from typing import Optional
-from flask import Flask, request, jsonify
-
+from google.cloud import pubsub_v1
+from flask import jsonify
 # Configure logging FIRST
 logging.basicConfig(
     level=logging.INFO,
@@ -32,7 +32,6 @@ class NonRetryableError(Exception):
     """
     pass
 
-
 # Configuration for retry control
 MAX_RETRY_COUNT = 3  # Maximum retries before permanent failure
 
@@ -47,9 +46,7 @@ from config import PROJECT_ID
 
 # Initialize GCP clients
 db = firestore.Client(project=PROJECT_ID)
-
-# Initialize Flask app
-app = Flask(__name__)
+SUBSCRIPTION_ID = "video-encode-topic-pusher"
 
 
 def cleanup_temp_files(*file_paths):
@@ -112,7 +109,7 @@ def check_job_idempotency(job_id: str) -> tuple[bool, str, int]:
     """
     # Statuses that indicate job should not be processed again
     TERMINAL_STATUSES = {"done", "error", "cancelled", "failed"}
-    IN_PROGRESS_STATUSES = {"queued"}
+    IN_PROGRESS_STATUSES = {"queued", "encoding"}
 
     try:
         job_ref = db.collection("jobs").document(job_id)
@@ -327,16 +324,7 @@ def process_encoding_job(data: dict):
 def job_ref_dict(job_id: str):
     return db.collection("jobs").document(job_id).get().to_dict()
 
-@app.route('/encode', methods=['POST'])
 def handle_pubsub_push():
-    """
-    ACK/NACK BEHAVIOR:
-    - HTTP 200-299: Message is ACKed (success or permanent failure)
-    - HTTP 400-499: Message is ACKed (invalid message, no retry)
-    - HTTP 500: Message is NACKed (transient failure, will retry with backoff)
-    This endpoint only returns 500 for explicitly retryable errors.
-    All other errors return 200/400 to ACK and prevent retry storms.
-    """
     job_id = None
 
     try:
@@ -482,31 +470,23 @@ def handle_pubsub_push():
             'retryable': False
         }), 200
 
-@app.route('/', methods=['GET'])
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint for Cloud Run"""
-    return 'OK', 200
+def main():
+    subscriber = pubsub_v1.SubscriberClient()
+    subscription_path = subscriber.subscription_path(PROJECT_ID, SUBSCRIPTION_ID)
+    print(f"listening on: {subscription_path}")
+    try:
+        while True:
+            time.sleep(60)
+    except KeyboardInterrupt:
+        streaming_
+
 
 # running flask app here for pub sub subscription
 # cloud Run will route HTTP requests to this Flask app
 if __name__ == "__main__":
     # Pub/Sub push subscription will POST to /encode endpoint.
-    port = int(os.environ.get("PORT", 8080))
-
-    logger.info("=" * 60)
-    logger.info("FFmpeg Encoding Worker Starting (PUSH mode)")
-    logger.info(f"Project ID: {PROJECT_ID}")
-    logger.info(f"Port: {port}")
-    logger.info("Push endpoint: /encode")
-    logger.info("Health check: / or /health")
-    logger.info("=" * 60)
+    main()
 
     # Run Flask app
     # Cloud Run manages the lifecycle, no need for signal handlers
-    app.run(
-        host="0.0.0.0",
-        port=port,
-        debug=False,  # Always False in production
-        threaded=True  # Handle multiple requests concurrently
-    )
+    
