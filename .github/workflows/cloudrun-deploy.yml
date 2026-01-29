@@ -47,3 +47,27 @@ jobs:
             --image $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE:$GITHUB_SHA \
             --region $REGION \
             --quiet
+      - name: Cleanup old images (keep last 5)
+        run: |
+          set -e
+
+          IMAGES=$(gcloud artifacts docker images list \
+            $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE \
+            --format="value(name)" \
+            --sort-by=~CREATE_TIME)
+
+          COUNT=$(echo "$IMAGES" | wc -l)
+
+          if [ "$COUNT" -le 5 ]; then
+            echo "Only $COUNT images found. Nothing to delete."
+            exit 0
+          fi
+
+          echo "Found $COUNT images. Deleting oldest..."
+
+          echo "$IMAGES" | tail -n +6 | while read IMAGE; do
+            echo "Deleting $IMAGE"
+            gcloud artifacts docker images delete "$IMAGE" \
+              --quiet --delete-tags
+          done
+
