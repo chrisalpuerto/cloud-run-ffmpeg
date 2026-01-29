@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 client = storage.Client()
 publisher = pubsub_v1.PublisherClient()
-PROJECT_ID = os.getenv("PROJECT_ID")
+PROJECT_ID = "hooptuber-dev-1234"
 
 # default to my topic, will be written to production topic later
 

@@ -272,6 +272,7 @@ def process_message(data: dict, message_id: str) -> bool:
         logger.error(f"[{job_id}] Non-retryable error: {error_msg}")
         if job_id:
             update_job_status(job_id, "error", error=error_msg)
+            
         return True
 
     except RetryableError as e:
