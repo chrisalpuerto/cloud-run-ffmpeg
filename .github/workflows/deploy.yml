@@ -46,5 +46,4 @@ jobs:
           gcloud run jobs update $SERVICE \
             --image $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE:$GITHUB_SHA \
             --region $REGION \
-            --platform managed \
             --quiet
