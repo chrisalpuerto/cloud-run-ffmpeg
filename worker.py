@@ -288,6 +288,7 @@ def process_message(message):
                 message.ack()
                 return
             update_job_status(job_id, "encoding", error=f"Retry {new_retry_count}: {error_msg}")
+        logging.info(f"Received retryable error: {str(e)}")
         message.nack()
 
     except Exception as e:
@@ -309,7 +310,7 @@ def main():
             "subscription": subscription_path,
             "max_messages": 1,  # start with 1
         },
-        timeout=30,
+        timeout=60,
     )
 
     if not response.received_messages:

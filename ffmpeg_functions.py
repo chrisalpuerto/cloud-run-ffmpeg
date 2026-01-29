@@ -20,19 +20,6 @@ class VideoAlreadyOptimized(Exception):
 
 
 def get_video_info(input_path: str) -> dict:
-    """
-    Get video metadata using ffprobe
-
-    Args:
-        input_path: Path to input video file
-
-    Returns:
-        dict with keys: codec_name, width, height, format_name
-
-    Raises:
-        FFmpegError: If ffprobe fails
-        FileNotFoundError: If input file doesn't exist
-    """
     if not os.path.exists(input_path):
         error_msg = f"Input file not found: {input_path}"
         logger.error(error_msg)
