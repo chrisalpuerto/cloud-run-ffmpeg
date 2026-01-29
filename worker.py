@@ -230,51 +230,49 @@ def process_encoding_job(data: dict):
             logger.warning(f"[{job_id}] Cleanup failed: {cleanup_error}")
 
 
-def process_message(message):
+def process_message(data: dict, message_id: str) -> bool:
+    """Process a single encoding job from Pub/Sub.
+
+    Returns True if the message should be ACKed, False to leave it
+    unacknowledged (it will be redelivered after the ack deadline).
+    """
     job_id = None
     try:
-        message_data = message.data.decode('utf-8')
-        data = json.loads(message_data)
-        logger.info(f"Received encoding job: {data} (messageId: {message.message_id})")
+        logger.info(f"Received encoding job: {data} (messageId: {message_id})")
 
         job_id = data.get("jobId")
         if not job_id:
             logger.error("Missing jobId in message data")
-            message.ack()
-            return
+            return True
 
         job = job_ref_dict(job_id)
         if job and job.get("encoded_uri"):
             logger.warning(f"[{job_id}] Already encoded; skipping")
-            message.ack()
-            return
+            return True
 
         should_skip, current_status, retry_count = check_job_idempotency(job_id)
         if should_skip:
             logger.info(f"Job {job_id} already handled (status: {current_status}). ACKing message.")
-            message.ack()
-            return
+            return True
 
         if retry_count >= MAX_RETRY_COUNT:
             logger.error(f"Job {job_id} exceeded max retries ({MAX_RETRY_COUNT})")
             mark_job_permanently_failed(job_id, "Exceeded max retry attempts")
-            message.ack()
-            return
+            return True
 
         if data.get("status") in ["done", "error", "cancelled", "failed"]:
             logger.info(f"Job {job_id} has terminal status in payload: {data.get('status')}")
-            message.ack()
-            return
+            return True
 
         process_encoding_job(data)
-        message.ack()
+        return True
 
     except NonRetryableError as e:
         error_msg = str(e)
         logger.error(f"[{job_id}] Non-retryable error: {error_msg}")
         if job_id:
             update_job_status(job_id, "error", error=error_msg)
-        message.ack()
+        return True
 
     except RetryableError as e:
         error_msg = str(e)
@@ -285,18 +283,17 @@ def process_message(message):
             if new_retry_count >= MAX_RETRY_COUNT:
                 logger.error(f"[{job_id}] Max retries exceeded, marking as permanently failed")
                 mark_job_permanently_failed(job_id, error_msg)
-                message.ack()
-                return
+                return True
             update_job_status(job_id, "encoding", error=f"Retry {new_retry_count}: {error_msg}")
-        logging.info(f"Received retryable error: {str(e)}")
-        message.nack()
+        logger.info(f"Retryable error, leaving message unacknowledged: {error_msg}")
+        return False
 
     except Exception as e:
         error_msg = str(e)
         logger.error(f"[{job_id}] Unexpected error: {error_msg}", exc_info=True)
         if job_id:
             update_job_status(job_id, "error", error=f"Unexpected: {error_msg}")
-        message.ack()
+        return True
 
 
 def main():
@@ -308,7 +305,7 @@ def main():
     response = subscriber.pull(
         request={
             "subscription": subscription_path,
-            "max_messages": 1,  # start with 1
+            "max_messages": 1,
         },
         timeout=60,
     )
@@ -317,8 +314,26 @@ def main():
         logger.info("No messages available, exiting job.")
         return
 
+    ack_ids = []
+
     for received_message in response.received_messages:
-        process_message(received_message)
+        message_data = received_message.message.data.decode("utf-8")
+        data = json.loads(message_data)
+        message_id = received_message.message.message_id
+
+        should_ack = process_message(data, message_id)
+
+        if should_ack:
+            ack_ids.append(received_message.ack_id)
+
+    if ack_ids:
+        subscriber.acknowledge(
+            request={
+                "subscription": subscription_path,
+                "ack_ids": ack_ids,
+            }
+        )
+        logger.info(f"Acknowledged {len(ack_ids)} message(s).")
 
     logger.info("Job finished processing messages. Exiting.")
 
