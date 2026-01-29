@@ -2,7 +2,7 @@ name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [cloud-runs-jobs]
+    branches: [cloud-run-jobs]
 
 # CI/CD ENV VARS (runner only)
 env:
