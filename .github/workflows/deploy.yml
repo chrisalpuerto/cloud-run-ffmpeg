@@ -2,19 +2,22 @@ name: Deploy to Cloud Run
 
 on:
   push:
-    branches: [main]
+    branches: [cloud-runs-jobs]
 
 # CI/CD ENV VARS (runner only)
 env:
   PROJECT_ID: hooptuber-dev-1234
   REGION: us-central1
-  SERVICE: cloud-video-encoder-hooptuber
-  REPO: ffmpeg-encoder
+  SERVICE: video-encoder2
+  REPO: video-encoder-job-workers
   IMAGE: encoder
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
 
     steps:
       - uses: actions/checkout@v4
@@ -24,6 +27,7 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
+        # configure docker to use gcloud
       - uses: google-github-actions/setup-gcloud@v2
 
       # Docker auth for Artifact Registry
@@ -39,7 +43,7 @@ jobs:
 
       # Deploy update to existing Cloud Run service
       - run: |
-          gcloud run deploy $SERVICE \
+          gcloud run jobs update $SERVICE \
             --image $REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$IMAGE:$GITHUB_SHA \
             --region $REGION \
             --platform managed \

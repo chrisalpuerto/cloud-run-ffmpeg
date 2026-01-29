@@ -25,7 +25,7 @@ class NonRetryableError(Exception):
 
 
 MAX_RETRY_COUNT = 3
-SUBSCRIPTION_ID = "video-encode-topic-sub"
+SUBSCRIPTION_ID = "video-encode-pull-sub"
 
 db = firestore.Client(project=PROJECT_ID)
 
@@ -301,20 +301,25 @@ def process_message(message):
 def main():
     subscriber = pubsub_v1.SubscriberClient()
     subscription_path = subscriber.subscription_path(PROJECT_ID, SUBSCRIPTION_ID)
-    logger.info(f"Starting worker, listening on: {subscription_path}")
 
-    streaming_pull_future = subscriber.subscribe(subscription_path, callback=process_message)
+    logger.info(f"Cloud Run Job started, pulling messages from {subscription_path}")
 
-    try:
-        streaming_pull_future.result()
-    except KeyboardInterrupt:
-        logger.info("Received shutdown signal")
-        streaming_pull_future.cancel()
-        streaming_pull_future.result()
-    except Exception as e:
-        logger.error(f"Subscriber error: {e}")
-        streaming_pull_future.cancel()
-        raise
+    response = subscriber.pull(
+        request={
+            "subscription": subscription_path,
+            "max_messages": 1,  # start with 1
+        },
+        timeout=30,
+    )
+
+    if not response.received_messages:
+        logger.info("No messages available, exiting job.")
+        return
+
+    for received_message in response.received_messages:
+        process_message(received_message)
+
+    logger.info("Job finished processing messages. Exiting.")
 
 
 if __name__ == "__main__":
