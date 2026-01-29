@@ -57,6 +57,9 @@ def update_job_status(job_id: str, status: str, error: Optional[str] = None, **k
 def update_video_gcs_uri(job_id: str, gcs_uri: str):
     try:
         job_ref = db.collection("jobs").document(job_id)
+        """
+        
+        """
         job_ref.update({"videoGcsUri": gcs_uri})
         logger.info(f"Job {job_id} video GCS URI updated.")
     except Exception as e:

@@ -118,7 +118,7 @@ def encode(input_path: str, output_path: str):
         is_mp4 = 'mp4' in video_info['format_name'].lower()
         height = video_info['height']
 
-        if is_mp4 and height <= TARGET_HEIGHT:
+        if height <= TARGET_HEIGHT:
             msg = (f"Video already optimized: MP4 format with {height}p resolution "
                   f"(<= {TARGET_HEIGHT}p target). Skipping encoding.")
             logger.info(msg)
