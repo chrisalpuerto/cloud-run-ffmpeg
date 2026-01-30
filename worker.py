@@ -369,6 +369,12 @@ def handle_pubsub_push():
             return f'Bad Request: invalid message data - {str(e)}', 400
 
         job_id = data.get("jobId")
+        # if variable == "service" then continue, else return 200
+        if data.get("video_encoder") == "jobs":
+            logging.info(f"Skipping, job is for cloud run jobs, not service, exiting")
+            return jsonify({
+                "status": "encoding_jobs",
+            }), 200
 
         # early validation: job_id is required
         if not job_id:
