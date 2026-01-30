@@ -103,7 +103,7 @@ def update_job_encoded(job_id: str, output_uri: str, duration_sec: int):
         logger.info(f"Job {job_id} marked as done.")
     except Exception as e:
         logger.error(f"Failed to mark job {job_id} as done: {e}")
-
+# hi
 
 def check_job_idempotency(job_id: str) -> tuple[bool, str, int]:
     """
