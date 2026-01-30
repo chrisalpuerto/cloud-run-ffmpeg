@@ -247,6 +247,12 @@ def process_message(data: dict, message_id: str) -> bool:
         if not job_id:
             logger.error("Missing jobId in message data")
             return True
+        
+        # handling if it is for cloud run service, not jobs
+        determine_service_job = data.get("video_encoder")
+        if determine_service_job == "service":
+            logging.info(f"HALT: exiting cloud run job, as this job is meant for cloud run service. Job id: {job_id}. Exiting, bye!")
+            return True
 
         job = job_ref_dict(job_id)
         if job and job.get("encoded_uri"):
