@@ -16,25 +16,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Custom exception classes for retry control
-class RetryableError(Exception):
-    """
-    Transient infrastructure failures that should trigger Pub/Sub retry.
-    Examples: temporary GCS issues, network timeouts, container resource errors.
-    """
-    pass
-
-
 class NonRetryableError(Exception):
     """
-    Permanent business-logic failures that should NOT trigger retry.
-    Examples: invalid input, corrupt videos, FFmpeg failures, missing fields.
+    All failures are treated as permanent — no retries.
+    Examples: invalid input, corrupt videos, FFmpeg failures, GCS errors.
     """
     pass
-
-
-# Configuration for retry control
-MAX_RETRY_COUNT = 1  # Maximum retries before permanent failure
 
 # import GCP libraries and initialize clients
 from google.cloud import firestore
@@ -105,14 +92,14 @@ def update_job_encoded(job_id: str, output_uri: str, duration_sec: int):
         logger.error(f"Failed to mark job {job_id} as done: {e}")
 # hi
 
-def check_job_idempotency(job_id: str) -> tuple[bool, str, int]:
+def check_job_idempotency(job_id: str) -> tuple[bool, str]:
     """
     Check if job has already been handled or is in progress.
-    Returns (should_skip, current_status, retry_count).
+    Returns (should_skip, current_status).
     """
     # Statuses that indicate job should not be processed again
     TERMINAL_STATUSES = {"done", "error", "cancelled", "failed"}
-    IN_PROGRESS_STATUSES = {"queued"}
+    IN_PROGRESS_STATUSES = {"queued", "encoding", "processing"}
 
     try:
         job_ref = db.collection("jobs").document(job_id)
@@ -120,60 +107,27 @@ def check_job_idempotency(job_id: str) -> tuple[bool, str, int]:
 
         if not job_doc.exists:
             logger.warning(f"Job {job_id} not found in Firestore")
-            return False, "not_found", 0
+            return False, "not_found"
 
         job_data = job_doc.to_dict()
         status = job_data.get("status", "unknown")
-        retry_count = job_data.get("retryCount", 0)
 
         if status in TERMINAL_STATUSES:
             logger.info(f"Job {job_id} already in terminal status: {status}")
-            return True, status, retry_count
+            return True, status
 
         if status in IN_PROGRESS_STATUSES:
             logger.info(f"Job {job_id} already in progress: {status}")
-            return True, status, retry_count
+            return True, status
 
-        return False, status, retry_count
+        return False, status
 
     except Exception as e:
         logger.error(f"Failed to check job {job_id} status: {e}")
         # On Firestore read failure, allow processing but log the issue
-        return False, "unknown", 0
+        return False, "unknown"
 
 
-def increment_retry_count(job_id: str) -> int:
-    """
-    Increment and return the retry count for a job.
-    Returns the new retry count.
-    """
-    try:
-        job_ref = db.collection("jobs").document(job_id)
-        job_ref.update({"retryCount": firestore.Increment(1)})
-
-        # Fetch the updated count
-        job_doc = job_ref.get()
-        if job_doc.exists:
-            return job_doc.to_dict().get("retryCount", 1)
-        return 1
-    except Exception as e:
-        logger.error(f"Failed to increment retry count for job {job_id}: {e}")
-        return 0
-
-
-def mark_job_permanently_failed(job_id: str, error: str):
-    """Mark a job as permanently failed after exceeding retry limit."""
-    try:
-        job_ref = db.collection("jobs").document(job_id)
-        job_ref.update({
-            "status": "failed",
-            "error": f"Exceeded max retries ({MAX_RETRY_COUNT}): {error}",
-            "failedAt": firestore.SERVER_TIMESTAMP,
-            "permanentFailure": True
-        })
-        logger.info(f"Job {job_id} marked as permanently failed")
-    except Exception as e:
-        logger.error(f"Failed to mark job {job_id} as permanently failed: {e}")
 
 def process_encoding_job(data: dict):
     """
@@ -185,8 +139,7 @@ def process_encoding_job(data: dict):
     }
     Output will be uploaded to: gs://{raw_bucket}/converted_uploads/{output_filename}
     Raises:
-        RetryableError: For transient infrastructure failures (GCS timeouts, network issues)
-        NonRetryableError: For permanent failures (invalid input, FFmpeg errors, corrupt videos)
+        NonRetryableError: For all failures (no retries)
     """
     job_id = None
     input_file = None
@@ -236,11 +189,7 @@ def process_encoding_job(data: dict):
             # File not found is permanent; other GCS errors may be transient
             if "not found" in error_str or "404" in error_str:
                 raise NonRetryableError(f"Source file not found: {str(e)}")
-            # 429 Too Many Requests - do not retry
-            if "429" in error_str or "too many requests" in error_str:
-                raise NonRetryableError(f"GCS download rate limited (429): {str(e)}")
-            # Transient GCS errors (network, timeout, etc.)
-            raise RetryableError(f"GCS download failed (transient): {str(e)}")
+            raise NonRetryableError(f"GCS download failed: {str(e)}")
 
         # Step 2: Encode video (or skip if already optimized)
         logger.info(f"{curr_username}: starting step 2/3: ")
@@ -270,12 +219,7 @@ def process_encoding_job(data: dict):
             # Output file disappeared - permanent failure
             raise NonRetryableError(f"Output file not found for upload: {str(e)}")
         except GCSError as e:
-            error_str = str(e).lower()
-            # 429 Too Many Requests - do not retry
-            if "429" in error_str or "too many requests" in error_str:
-                raise NonRetryableError(f"GCS upload rate limited (429): {str(e)}")
-            # GCS upload errors may be transient
-            raise RetryableError(f"GCS upload failed (transient): {str(e)}")
+            raise NonRetryableError(f"GCS upload failed: {str(e)}")
 
         # Success - update job status and queue for further processing
         duration = time.time() - start_time
@@ -297,15 +241,10 @@ def process_encoding_job(data: dict):
         except Exception as e:
             logger.error(f"[{job_id}] Failed to publish to next worker: {e}", exc_info=True)
             logger.error(f"{curr_username}: failed to publish to next worker.")
-            error_str = str(e).lower()
-            # 429 Too Many Requests - do not retry
-            if "429" in error_str or "too many requests" in error_str:
-                raise NonRetryableError(f"Publish rate limited (429): {str(e)}")
-            raise RetryableError(f"Failed to publish to next worker: {str(e)}")
+            raise NonRetryableError(f"Failed to publish to next worker: {str(e)}")
 
 
-    except (RetryableError, NonRetryableError):
-        # Re-raise classified errors for handler to process
+    except NonRetryableError:
         raise
 
     except Exception as e:
@@ -342,11 +281,9 @@ def job_ref_dict(job_id: str):
 def handle_pubsub_push():
     """
     ACK/NACK BEHAVIOR:
-    - HTTP 200-299: Message is ACKed (success or permanent failure)
-    - HTTP 400-499: Message is ACKed (invalid message, no retry)
-    - HTTP 500: Message is NACKed (transient failure, will retry with backoff)
-    This endpoint only returns 500 for explicitly retryable errors.
-    All other errors return 200/400 to ACK and prevent retry storms.
+    - HTTP 200: Message is ACKed (success or failure — no retries)
+    - HTTP 400: Message is ACKed (invalid message)
+    This endpoint never returns 500. All errors ACK to prevent retries.
     """
     job_id = None
 
@@ -400,7 +337,7 @@ def handle_pubsub_push():
             )
             return jsonify({"status": "encoded_with_warning"}), 200
         # Check if job has already been handled using idempotency check
-        should_skip, current_status, retry_count = check_job_idempotency(job_id)
+        should_skip, current_status = check_job_idempotency(job_id)
 
         if should_skip:
             logger.info(f"Job {job_id} already handled (status: {current_status}). ACKing message.")
@@ -409,17 +346,6 @@ def handle_pubsub_push():
                 'jobId': job_id,
                 'currentStatus': current_status
             }), 200
-
-        # check retry limit before processing
-        if retry_count >= MAX_RETRY_COUNT:
-            error_msg = f"Job {job_id} exceeded max retries ({MAX_RETRY_COUNT})"
-            logger.error(error_msg)
-            mark_job_permanently_failed(job_id, "Exceeded max retry attempts")
-            return jsonify({
-                'status': 'permanently_failed',
-                'jobId': job_id,
-                'message': error_msg
-            }), 200  # ACK to stop retries
 
         # legacy status checks from message payload (for backwards compatibility)
         if data.get("status") in ["done", "error", "cancelled", "failed"]:
@@ -437,51 +363,17 @@ def handle_pubsub_push():
         return jsonify({'status': 'processing', 'jobId': job_id}), 200
 
     except NonRetryableError as e:
-        # permanent failure, ACK message to prevent retries
         error_msg = str(e)
-        logger.error(f"[{job_id}] Non-retryable error: {error_msg}")
+        logger.error(f"[{job_id}] Error: {error_msg}")
 
         if job_id:
             update_job_status(job_id, "error", error=error_msg)
 
-        # return 200 to ACK as this job will never succeed
         return jsonify({
-            'status': 'permanent_error',
+            'status': 'error',
             'jobId': job_id,
             'message': error_msg,
-            'retryable': False
         }), 200
-
-    except RetryableError as e:
-        # transient failure, check retry count before NACKing
-        error_msg = str(e)
-        logger.warning(f"[{job_id}] Retryable error: {error_msg}")
-
-        if job_id:
-            new_retry_count = increment_retry_count(job_id)
-            logger.info(f"[{job_id}] Retry count: {new_retry_count}/{MAX_RETRY_COUNT}")
-
-            if new_retry_count >= MAX_RETRY_COUNT:
-                # Exceeded retries - mark as permanent failure and ACK
-                logger.error(f"[{job_id}] Max retries exceeded, marking as permanently failed")
-                mark_job_permanently_failed(job_id, error_msg)
-                return jsonify({
-                    'status': 'failed',
-                    'jobId': job_id,
-                    'message': f'Max retries exceeded: {error_msg}',
-                    'retryCount': new_retry_count
-                }), 200
-
-            # Update status but keep retrying
-            update_job_status(job_id, "encoding", error=f"Retry {new_retry_count}: {error_msg}")
-
-        # Return 500 to NACK - Pub/Sub will retry with backoff
-        return jsonify({
-            'status': 'transient_error',
-            'jobId': job_id,
-            'message': error_msg,
-            'retryable': True
-        }), 500
 
     except Exception as e:
         # Unexpected error - treat as non-retryable to be safe
