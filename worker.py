@@ -34,7 +34,7 @@ class NonRetryableError(Exception):
 
 
 # Configuration for retry control
-MAX_RETRY_COUNT = 3  # Maximum retries before permanent failure
+MAX_RETRY_COUNT = 1  # Maximum retries before permanent failure
 
 # import GCP libraries and initialize clients
 from google.cloud import firestore
