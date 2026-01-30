@@ -10,7 +10,7 @@ env:
   REGION: us-central1
   SERVICE: cloud-video-encoder-hooptuber
   REPO: ffmpeg-encoder
-  IMAGE: encoder
+  IMAGE: encoder-http
 
 jobs:
   deploy:

@@ -10,7 +10,7 @@ FFMPEG_PRESET = os.getenv("FFMPEG_PRESET", "fast")
 CRF = os.getenv("FFMPEG_CRF", "23")
 
 # testing on 1080, will change back to 720p 
-TARGET_HEIGHT = int(os.getenv("TARGET_HEIGHT", "1080"))
+TARGET_HEIGHT = int(os.getenv("TARGET_HEIGHT", "720"))
 
 
 if not PROJECT_ID:
