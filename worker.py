@@ -236,6 +236,9 @@ def process_encoding_job(data: dict):
             # File not found is permanent; other GCS errors may be transient
             if "not found" in error_str or "404" in error_str:
                 raise NonRetryableError(f"Source file not found: {str(e)}")
+            # 429 Too Many Requests - do not retry
+            if "429" in error_str or "too many requests" in error_str:
+                raise NonRetryableError(f"GCS download rate limited (429): {str(e)}")
             # Transient GCS errors (network, timeout, etc.)
             raise RetryableError(f"GCS download failed (transient): {str(e)}")
 
@@ -267,6 +270,10 @@ def process_encoding_job(data: dict):
             # Output file disappeared - permanent failure
             raise NonRetryableError(f"Output file not found for upload: {str(e)}")
         except GCSError as e:
+            error_str = str(e).lower()
+            # 429 Too Many Requests - do not retry
+            if "429" in error_str or "too many requests" in error_str:
+                raise NonRetryableError(f"GCS upload rate limited (429): {str(e)}")
             # GCS upload errors may be transient
             raise RetryableError(f"GCS upload failed (transient): {str(e)}")
 
@@ -290,6 +297,10 @@ def process_encoding_job(data: dict):
         except Exception as e:
             logger.error(f"[{job_id}] Failed to publish to next worker: {e}", exc_info=True)
             logger.error(f"{curr_username}: failed to publish to next worker.")
+            error_str = str(e).lower()
+            # 429 Too Many Requests - do not retry
+            if "429" in error_str or "too many requests" in error_str:
+                raise NonRetryableError(f"Publish rate limited (429): {str(e)}")
             raise RetryableError(f"Failed to publish to next worker: {str(e)}")
 
 
