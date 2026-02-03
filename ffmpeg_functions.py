@@ -98,9 +98,7 @@ def get_video_info(input_path: str) -> dict:
 def encode(input_path: str, output_path: str):
     """
     Encode video from HEVC/MOV to H.264 MP4 at 720p
-
     Skips encoding if video is already MP4 and resolution is 720p or lower.
-
     Raises:
         FFmpegError: If encoding fails
         FileNotFoundError: If input file doesn't exist
@@ -131,11 +129,16 @@ def encode(input_path: str, output_path: str):
         is_mp4 = 'mp4' in video_info['format_name'].lower()
         height = video_info['height']
 
-        if is_mp4 and height <= TARGET_HEIGHT:
-            msg = (f"Video already optimized: MP4 format with {height}p resolution "
-                  f"(<= {TARGET_HEIGHT}p target). Skipping encoding.")
-            logger.info(msg)
-            raise VideoAlreadyOptimized(msg)
+        """
+        TAKEN OUT: work being sent to this worker is already checked, will never be an mp4, so we can leave this out.
+        Only need to add if height <= TARGET_HEIGHT (1080p now) then just encode down to mp4
+        """
+
+        # if is_mp4 and height <= TARGET_HEIGHT:
+        #     msg = (f"Video already optimized: MP4 format with {height}p resolution "
+        #           f"(<= {TARGET_HEIGHT}p target). Skipping encoding.")
+        #     logger.info(msg)
+        #     raise VideoAlreadyOptimized(msg)
 
     except VideoAlreadyOptimized:
         # Re-raise VideoAlreadyOptimized
@@ -146,11 +149,20 @@ def encode(input_path: str, output_path: str):
 
     logger.info(f"Starting encode: {input_path} ({input_size / 1024 / 1024:.2f} MB) -> {output_path}")
     logger.info(f"Target: {TARGET_HEIGHT}p, CRF: {CRF}, Preset: {FFMPEG_PRESET}")
+    if height > TARGET_HEIGHT:
+        logger.info(f"Height {height}p exceeds target {TARGET_HEIGHT}p, scaling down")
+        vf_filter = f"scale=-2:{TARGET_HEIGHT}"
+    else:
+        logger.info(f"Height {height}p <= target {TARGET_HEIGHT}p, keeping original resolution")
+        vf_filter = None
 
     cmd = [
         "ffmpeg", "-y",
         "-i", input_path,
-        "-vf", f"scale=-2:{TARGET_HEIGHT}",  # -2 ensures even dimensions
+    ]
+    if vf_filter:
+        cmd += ["-vf", vf_filter]
+    cmd += [
         "-c:v", "libx264",
         "-preset", FFMPEG_PRESET,
         "-crf", str(CRF),
